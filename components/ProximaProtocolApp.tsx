@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useState } from "react";
 import { useAccount, usePublicClient, useReadContract, useWriteContract } from "wagmi";
@@ -162,33 +162,52 @@ export default function ProximaProtocolApp() {
   //
   // Some public RPC providers cap how large a block range (or how many
   // results) a single eth_getLogs call can return ("Request exceeds
-  // defined limit"). Fetch in bounded chunks instead of one giant range
-  // so this keeps working regardless of which node serves the request.
+  // defined limit"), and some just hang instead of returning an error.
+  // Fetch in bounded chunks, with a per-request timeout and a hard cap
+  // on total attempts, so this can never spin forever - it either
+  // finishes or surfaces a clear error.
+  function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms)),
+    ]);
+  }
+
   const fetchEventsChunked = useCallback(
     async (eventName: "TicketBought" | "RandomTicketsBought", player: `0x${string}`) => {
       if (!publicClient) return [];
-      const latest = await publicClient.getBlockNumber();
+      const latest = await withTimeout(publicClient.getBlockNumber(), 15000, "getBlockNumber");
       let chunkSize = 2000n;
       let from = DEPLOY_BLOCK;
       const allLogs: any[] = [];
+      let attempts = 0;
+      const MAX_ATTEMPTS = 200;
 
       while (from <= latest) {
+        attempts++;
+        if (attempts > MAX_ATTEMPTS) {
+          throw new Error("Gave up after 200 attempts - RPC seems to be rejecting/hanging on every request.");
+        }
         const to = from + chunkSize > latest ? latest : from + chunkSize;
         try {
-          const logs = await publicClient.getContractEvents({
-            address: PROXIMA_PROTOCOL_ADDRESS,
-            abi: proximaProtocolAbi,
-            eventName,
-            args: { player },
-            fromBlock: from,
-            toBlock: to,
-          });
+          const logs = await withTimeout(
+            publicClient.getContractEvents({
+              address: PROXIMA_PROTOCOL_ADDRESS,
+              abi: proximaProtocolAbi,
+              eventName,
+              args: { player },
+              fromBlock: from,
+              toBlock: to,
+            }),
+            15000,
+            "getContractEvents"
+          );
           allLogs.push(...logs);
           from = to + 1n;
         } catch (e) {
-          // node rejected even this chunk size - halve it and retry,
-          // unless we're already down to a sliver (then skip ahead so
-          // one bad block range can't hang the whole load forever)
+          // node rejected (or timed out on) even this chunk size - halve
+          // it and retry, unless we're already down to a sliver (then
+          // skip ahead so one bad block range can't hang the whole load)
           if (chunkSize > 50n) {
             chunkSize = chunkSize / 2n;
           } else {
