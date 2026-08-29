@@ -300,7 +300,15 @@ export default function ProximaProtocolApp() {
 
   useEffect(() => {
     loadMyTickets();
-  }, [loadMyTickets]);
+    // Intentionally only re-run when the connected address changes.
+    // loadMyTickets/fetchEventsChunked close over publicClient, which
+    // can get a new object reference on unrelated re-renders with wagmi -
+    // depending on the function reference itself here caused this effect
+    // to refire continuously, resetting the loading state before any
+    // single fetch could ever finish (looked exactly like an infinite
+    // "Refreshing..." even though each fetch was completing fine).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [address]);
 
   // ---------------------------------------------------------------------
   // Public round history (last 10 resolved rounds, for everyone to browse)
