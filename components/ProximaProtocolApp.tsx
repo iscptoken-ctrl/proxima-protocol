@@ -182,6 +182,7 @@ export default function ProximaProtocolApp() {
       const allLogs: any[] = [];
       let attempts = 0;
       const MAX_ATTEMPTS = 200;
+      const playerLower = player.toLowerCase();
 
       while (from <= latest) {
         attempts++;
@@ -190,19 +191,23 @@ export default function ProximaProtocolApp() {
         }
         const to = from + chunkSize > latest ? latest : from + chunkSize;
         try {
+          // Fetch all of this event type in the range (no indexed-arg
+          // filter - some RPC providers reject/mishandle filtered
+          // eth_getLogs requests with "Missing or invalid parameters")
+          // and filter by player client-side instead.
           const logs = await withTimeout(
             publicClient.getContractEvents({
               address: PROXIMA_PROTOCOL_ADDRESS,
               abi: proximaProtocolAbi,
               eventName,
-              args: { player },
               fromBlock: from,
               toBlock: to,
             }),
             15000,
             "getContractEvents"
           );
-          allLogs.push(...logs);
+          const mine = logs.filter((log: any) => (log.args?.player as string | undefined)?.toLowerCase() === playerLower);
+          allLogs.push(...mine);
           from = to + 1n;
         } catch (e) {
           // node rejected (or timed out on) even this chunk size - halve
