@@ -19,7 +19,7 @@ export const FOUNDER_INITIAL_PRICE = 20n * 10n ** 18n; // $20
 export const FOUNDER_FORCE_BUY_INCREMENT = 10n * 10n ** 18n; // $10
 
 export const erc20Abi = [
-  {a
+  {
     type: "function",
     name: "approve",
     stateMutability: "nonpayable",
