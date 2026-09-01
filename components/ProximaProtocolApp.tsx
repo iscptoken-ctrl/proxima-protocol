@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useAccount, usePublicClient, useReadContract, useWriteContract } from "wagmi";
 import { readContract, waitForTransactionReceipt } from "@wagmi/core";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
+import { decodeEventLog, keccak256, toHex } from "viem";
 import { wagmiConfig } from "@/lib/wagmi";
 import {
   PROXIMA_PROTOCOL_ADDRESS,
@@ -13,6 +14,7 @@ import {
   FOUNDER_SLOTS,
   FOUNDER_INITIAL_PRICE,
   FOUNDER_FORCE_BUY_INCREMENT,
+  ETHERSCAN_API_KEY,
   erc20Abi,
   proximaProtocolAbi,
 } from "@/lib/contract";
@@ -160,12 +162,11 @@ export default function ProximaProtocolApp() {
   // My tickets (per-user history, with correct win/lose detection)
   // ---------------------------------------------------------------------
   //
-  // Alchemy's free tier rate-limits bursts of requests (HTTP 429). The
-  // right response to that is to wait a bit and retry the SAME range -
-  // shrinking the range (which helps with "range too large" errors from
-  // other providers) doesn't fix rate limiting, it makes it worse by
-  // requiring more requests. So: back off with a real delay on 429s,
-  // and only shrink the range for other kinds of errors.
+  // Free-tier RPC eth_getLogs is capped to tiny block ranges (e.g. 10
+  // blocks on Alchemy's free plan) - fine near deployment, but useless
+  // once thousands of blocks have passed. Etherscan's V2 API (covers BSC
+  // via chainid=56) has no such range cap, so ticket history is fetched
+  // from there instead of via the RPC directly.
   function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
     return Promise.race([
       promise,
@@ -173,86 +174,61 @@ export default function ProximaProtocolApp() {
     ]);
   }
 
-  function delay(ms: number) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
+  const EVENT_SIGNATURES: Record<"TicketBought" | "RandomTicketsBought", string> = {
+    TicketBought: "TicketBought(uint256,address,uint256)",
+    RandomTicketsBought: "RandomTicketsBought(uint256,address,uint256[])",
+  };
 
-  function isRateLimitError(e: any): boolean {
-    const msg = String(e?.message || e?.details || e || "");
-    return msg.includes("429") || msg.toLowerCase().includes("rate limit") || msg.toLowerCase().includes("too many requests");
-  }
-
-  const fetchEventsChunked = useCallback(
+  const fetchEventsFromEtherscan = useCallback(
     async (eventName: "TicketBought" | "RandomTicketsBought", player: `0x${string}`) => {
-      if (!publicClient) return [];
-      const latest = await withTimeout(publicClient.getBlockNumber(), 15000, "getBlockNumber");
-      // Alchemy's free tier caps eth_getLogs at a 10-block range per
-      // request (confirmed via their own error message). Use that
-      // directly instead of guessing a larger size and shrinking down.
-      const CHUNK_SIZE = 9n;
-      let from = DEPLOY_BLOCK;
-      const allLogs: any[] = [];
-      let attempts = 0;
-      let rateLimitBackoffMs = 1000;
-      // With a 10-block cap, covering any real block range takes many
-      // requests - size the attempt budget to the actual range instead
-      // of a small fixed number, with room for rate-limit retries too.
-      const totalChunksNeeded = latest > from ? Number((latest - from) / CHUNK_SIZE) + 1 : 1;
-      const MAX_ATTEMPTS = Math.min(totalChunksNeeded * 5 + 100, 20000);
-      const playerLower = player.toLowerCase();
+      const topic0 = keccak256(toHex(EVENT_SIGNATURES[eventName]));
+      const url =
+        `https://api.etherscan.io/v2/api?chainid=56&module=logs&action=getLogs` +
+        `&address=${PROXIMA_PROTOCOL_ADDRESS}` +
+        `&fromBlock=${DEPLOY_BLOCK.toString()}` +
+        `&toBlock=latest` +
+        `&topic0=${topic0}` +
+        `&apikey=${ETHERSCAN_API_KEY}`;
 
-      while (from <= latest) {
-        attempts++;
-        if (attempts > MAX_ATTEMPTS) {
-          throw new Error(`Gave up after ${MAX_ATTEMPTS} attempts - RPC seems to be rejecting every request.`);
+      const res = await withTimeout(fetch(url), 20000, "Etherscan getLogs");
+      const json = await res.json();
+
+      if (json.status === "0") {
+        if (String(json.result).toLowerCase().includes("no records") || json.message === "No records found") {
+          return [];
         }
-        const to = from + CHUNK_SIZE > latest ? latest : from + CHUNK_SIZE;
-        try {
-          // Fetch all of this event type in the range (no indexed-arg
-          // filter - some RPC providers reject/mishandle filtered
-          // eth_getLogs requests with "Missing or invalid parameters")
-          // and filter by player client-side instead.
-          const logs = await withTimeout(
-            publicClient.getContractEvents({
-              address: PROXIMA_PROTOCOL_ADDRESS,
-              abi: proximaProtocolAbi,
-              eventName,
-              fromBlock: from,
-              toBlock: to,
-            }),
-            15000,
-            "getContractEvents"
-          );
-          const mine = logs.filter((log: any) => (log.args?.player as string | undefined)?.toLowerCase() === playerLower);
-          allLogs.push(...mine);
-          from = to + 1n;
-          rateLimitBackoffMs = 1000; // reset backoff after a success
-          await delay(120); // small courtesy gap between requests to avoid re-triggering the limit
-        } catch (e) {
-          if (isRateLimitError(e)) {
-            await delay(rateLimitBackoffMs);
-            rateLimitBackoffMs = Math.min(rateLimitBackoffMs * 2, 10000); // exponential backoff, capped at 10s
-            // don't advance `from` - just retry the same chunk after waiting
-            continue;
-          }
-          // some other error (timeout, transient failure) - skip this
-          // chunk so one bad block range can't hang the whole load
-          from = to + 1n;
-        }
+        throw new Error(`Etherscan getLogs error: ${json.result || json.message}`);
       }
-      return allLogs;
+
+      const playerLower = player.toLowerCase();
+      const decoded = (json.result as any[])
+        .map((log) => {
+          try {
+            const { args } = decodeEventLog({
+              abi: proximaProtocolAbi,
+              data: log.data,
+              topics: log.topics,
+              eventName,
+            });
+            return { args };
+          } catch {
+            return null;
+          }
+        })
+        .filter((l): l is { args: any } => l !== null)
+        .filter((l) => (l.args.player as string | undefined)?.toLowerCase() === playerLower);
+
+      return decoded;
     },
-    [publicClient]
+    []
   );
 
   const loadMyTickets = useCallback(async () => {
     if (!address || !publicClient) return;
     setLoadingHistory(true);
     try {
-      // Sequential, not Promise.all - firing both at once doubles the
-      // burst rate straight into Alchemy's free-tier rate limit.
-      const manualLogs = await fetchEventsChunked("TicketBought", address);
-      const randomLogs = await fetchEventsChunked("RandomTicketsBought", address);
+      const manualLogs = await fetchEventsFromEtherscan("TicketBought", address);
+      const randomLogs = await fetchEventsFromEtherscan("RandomTicketsBought", address);
 
       const byRound = new Map<string, Set<bigint>>();
       for (const log of manualLogs) {
@@ -321,7 +297,7 @@ export default function ProximaProtocolApp() {
     } finally {
       setLoadingHistory(false);
     }
-  }, [address, publicClient, fetchEventsChunked]);
+  }, [address, publicClient, fetchEventsFromEtherscan]);
 
   useEffect(() => {
     loadMyTickets();
