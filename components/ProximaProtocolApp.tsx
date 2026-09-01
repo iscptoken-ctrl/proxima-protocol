@@ -136,6 +136,7 @@ export default function ProximaProtocolApp() {
   const [founders, setFounders] = useState<FounderSlotUI[]>([]);
   const [loadingFounders, setLoadingFounders] = useState(false);
   const [showTroubleshooting, setShowTroubleshooting] = useState(false);
+  const [showHowToPlay, setShowHowToPlay] = useState(false);
 
   const contractBase = { address: PROXIMA_PROTOCOL_ADDRESS, abi: proximaProtocolAbi } as const;
   const isMaker = !!address && address.toLowerCase() === MAKER_WALLET.toLowerCase();
@@ -925,6 +926,71 @@ export default function ProximaProtocolApp() {
           >
             Claim
           </button>
+        </div>
+
+        {/* How to play */}
+        <div className="rounded-2xl border" style={{ background: "#13131F", borderColor: "rgba(255,255,255,0.08)" }}>
+          <button
+            onClick={() => setShowHowToPlay((v) => !v)}
+            className="w-full flex items-center justify-between p-4 text-left"
+          >
+            <span className="font-semibold">How to Play</span>
+            <span style={{ color: "#8B8B9E" }}>{showHowToPlay ? "hide" : "show"}</span>
+          </button>
+          {showHowToPlay && (
+            <div className="px-4 pb-4 space-y-4 text-sm" style={{ color: "#C7C7D6" }}>
+              <div>
+                <div className="font-semibold mb-1" style={{ color: "#E8B23D" }}>1. Get set up</div>
+                <p style={{ color: "#8B8B9E" }}>
+                  You need a wallet with some BNB (for gas) and USDT (to buy tickets) on BNB Smart Chain. Connect
+                  your wallet with the button at the top. The first time you buy, you'll be asked to approve the
+                  contract to spend your USDT - that's a one-time signature that covers many future purchases.
+                </p>
+              </div>
+              <div>
+                <div className="font-semibold mb-1" style={{ color: "#E8B23D" }}>2. Buy tickets - 1 USDT each</div>
+                <p style={{ color: "#8B8B9E" }}>
+                  Either pick your own number from 1-10,000 in "Pick a number", or switch to "Random tickets" and
+                  enter how many you want - the contract assigns each one a random number for you. You can buy as
+                  many times as you like during a round.
+                </p>
+              </div>
+              <div>
+                <div className="font-semibold mb-1" style={{ color: "#E8B23D" }}>3. Wait for the round to end</div>
+                <p style={{ color: "#8B8B9E" }}>
+                  Each round runs for 60 minutes. Once the timer hits 00:00, the round resolves automatically the
+                  next time anyone interacts with the contract - or you can trigger it yourself with the Resolve
+                  Round button once it's active.
+                </p>
+              </div>
+              <div>
+                <div className="font-semibold mb-1" style={{ color: "#E8B23D" }}>4. See what won</div>
+                <p style={{ color: "#8B8B9E" }}>
+                  An exact match to the winning number takes the Jackpot. Otherwise, the nearest 3 distinct numbers
+                  actually played that round win smaller prizes (Rank 1, 2, 3) - a ticket only ever wins its single
+                  best prize. Check "My tickets" to see how each of your numbers did.
+                </p>
+              </div>
+              <div>
+                <div className="font-semibold mb-1" style={{ color: "#E8B23D" }}>5. Claim your winnings</div>
+                <p style={{ color: "#8B8B9E" }}>
+                  Nothing is sent automatically. Once a round is resolved, hit "Claim this round" under "My
+                  tickets" (or use "Claim manually" with a round number and your numbers) - there's no deadline,
+                  claim whenever you like.
+                </p>
+              </div>
+              <div>
+                <div className="font-semibold mb-1" style={{ color: "#E8B23D" }}>Founders Slots (optional)</div>
+                <p style={{ color: "#8B8B9E" }}>
+                  Five slots exist. Claiming an empty one costs $20 and earns you 2% of every round's ticket
+                  revenue going forward, claimable any time as a dividend. Anyone can force-buy a slot you hold by
+                  paying $10 more than you did - if that happens, you're paid back your full price plus a $5
+                  premium plus any dividend you hadn't claimed yet, instantly. No slot is ever permanently locked
+                  to one person.
+                </p>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Troubleshooting / known issues */}
