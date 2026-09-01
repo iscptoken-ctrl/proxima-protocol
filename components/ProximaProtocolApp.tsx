@@ -160,17 +160,26 @@ export default function ProximaProtocolApp() {
   // My tickets (per-user history, with correct win/lose detection)
   // ---------------------------------------------------------------------
   //
-  // Some public RPC providers cap how large a block range (or how many
-  // results) a single eth_getLogs call can return ("Request exceeds
-  // defined limit"), and some just hang instead of returning an error.
-  // Fetch in bounded chunks, with a per-request timeout and a hard cap
-  // on total attempts, so this can never spin forever - it either
-  // finishes or surfaces a clear error.
+  // Alchemy's free tier rate-limits bursts of requests (HTTP 429). The
+  // right response to that is to wait a bit and retry the SAME range -
+  // shrinking the range (which helps with "range too large" errors from
+  // other providers) doesn't fix rate limiting, it makes it worse by
+  // requiring more requests. So: back off with a real delay on 429s,
+  // and only shrink the range for other kinds of errors.
   function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
     return Promise.race([
       promise,
       new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms)),
     ]);
+  }
+
+  function delay(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function isRateLimitError(e: any): boolean {
+    const msg = String(e?.message || e?.details || e || "");
+    return msg.includes("429") || msg.toLowerCase().includes("rate limit") || msg.toLowerCase().includes("too many requests");
   }
 
   const fetchEventsChunked = useCallback(
@@ -181,13 +190,14 @@ export default function ProximaProtocolApp() {
       let from = DEPLOY_BLOCK;
       const allLogs: any[] = [];
       let attempts = 0;
-      const MAX_ATTEMPTS = 200;
+      let rateLimitBackoffMs = 1000;
+      const MAX_ATTEMPTS = 60;
       const playerLower = player.toLowerCase();
 
       while (from <= latest) {
         attempts++;
         if (attempts > MAX_ATTEMPTS) {
-          throw new Error("Gave up after 200 attempts - RPC seems to be rejecting/hanging on every request.");
+          throw new Error("Gave up after 60 attempts - RPC seems to be rejecting every request.");
         }
         const to = from + chunkSize > latest ? latest : from + chunkSize;
         try {
@@ -209,10 +219,18 @@ export default function ProximaProtocolApp() {
           const mine = logs.filter((log: any) => (log.args?.player as string | undefined)?.toLowerCase() === playerLower);
           allLogs.push(...mine);
           from = to + 1n;
+          rateLimitBackoffMs = 1000; // reset backoff after a success
+          await delay(150); // small courtesy gap between requests to avoid re-triggering the limit
         } catch (e) {
-          // node rejected (or timed out on) even this chunk size - halve
-          // it and retry, unless we're already down to a sliver (then
-          // skip ahead so one bad block range can't hang the whole load)
+          if (isRateLimitError(e)) {
+            await delay(rateLimitBackoffMs);
+            rateLimitBackoffMs = Math.min(rateLimitBackoffMs * 2, 10000); // exponential backoff, capped at 10s
+            // don't shrink the range or advance `from` - just retry the same chunk after waiting
+            continue;
+          }
+          // some other error (bad range, timeout, etc.) - halve the
+          // range and retry, unless we're already down to a sliver
+          // (then skip ahead so one bad block range can't hang the load)
           if (chunkSize > 50n) {
             chunkSize = chunkSize / 2n;
           } else {
@@ -229,10 +247,10 @@ export default function ProximaProtocolApp() {
     if (!address || !publicClient) return;
     setLoadingHistory(true);
     try {
-      const [manualLogs, randomLogs] = await Promise.all([
-        fetchEventsChunked("TicketBought", address),
-        fetchEventsChunked("RandomTicketsBought", address),
-      ]);
+      // Sequential, not Promise.all - firing both at once doubles the
+      // burst rate straight into Alchemy's free-tier rate limit.
+      const manualLogs = await fetchEventsChunked("TicketBought", address);
+      const randomLogs = await fetchEventsChunked("RandomTicketsBought", address);
 
       const byRound = new Map<string, Set<bigint>>();
       for (const log of manualLogs) {
