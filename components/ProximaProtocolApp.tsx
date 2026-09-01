@@ -135,6 +135,7 @@ export default function ProximaProtocolApp() {
   const [makerAccrued, setMakerAccrued] = useState<bigint | null>(null);
   const [founders, setFounders] = useState<FounderSlotUI[]>([]);
   const [loadingFounders, setLoadingFounders] = useState(false);
+  const [showTroubleshooting, setShowTroubleshooting] = useState(false);
 
   const contractBase = { address: PROXIMA_PROTOCOL_ADDRESS, abi: proximaProtocolAbi } as const;
   const isMaker = !!address && address.toLowerCase() === MAKER_WALLET.toLowerCase();
@@ -924,6 +925,59 @@ export default function ProximaProtocolApp() {
           >
             Claim
           </button>
+        </div>
+
+        {/* Troubleshooting / known issues */}
+        <div className="rounded-2xl border" style={{ background: "#13131F", borderColor: "rgba(255,255,255,0.08)" }}>
+          <button
+            onClick={() => setShowTroubleshooting((v) => !v)}
+            className="w-full flex items-center justify-between p-4 text-left"
+          >
+            <span className="font-semibold">Troubleshooting / Common Issues</span>
+            <span style={{ color: "#8B8B9E" }}>{showTroubleshooting ? "hide" : "show"}</span>
+          </button>
+          {showTroubleshooting && (
+            <div className="px-4 pb-4 space-y-4 text-sm" style={{ color: "#C7C7D6" }}>
+              <div>
+                <div className="font-semibold mb-1" style={{ color: "#E8B23D" }}>
+                  "My wallet says this transaction will fail / is cancelling it automatically"
+                </div>
+                <p style={{ color: "#8B8B9E" }}>
+                  Some wallets (MetaMask's "Smart Transactions" feature especially) pre-simulate transactions and
+                  auto-cancel ones they think look risky or unusually expensive - even when the transaction is
+                  completely valid. This tends to happen right when a round needs to be closed out as part of your
+                  action (buying, claiming), since resolving a round costs more gas than a normal transaction -
+                  usually still only around $0.30-0.40 in fees, not a real problem. If this happens: try disabling
+                  "Smart Transactions" in your wallet's settings (MetaMask: Settings &gt; Advanced), or call{" "}
+                  <code className="px-1 rounded" style={{ background: "#0D0D18" }}>resolveRound()</code> yourself
+                  first from BscScan's Write Contract tab or Remix, then try your original action again.
+                </p>
+              </div>
+              <div>
+                <div className="font-semibold mb-1" style={{ color: "#E8B23D" }}>
+                  "My ticket looks closest to the winning number, but it didn't win anything"
+                </div>
+                <p style={{ color: "#8B8B9E" }}>
+                  Near-prize matching only looks up to 2,000 away from the winning number in each direction (a
+                  gas-safety limit). If every ticket played that round - including yours - was more than 2,000 away
+                  from the winning number, none of them are eligible for a near-prize that round, even if one was
+                  technically the closest of what was played. This matters most in quiet rounds with few tickets;
+                  it becomes far less likely to affect anything once a round has a healthy number of players spread
+                  across the range.
+                </p>
+              </div>
+              <div>
+                <div className="font-semibold mb-1" style={{ color: "#E8B23D" }}>
+                  "My tickets aren't showing up in 'My tickets'"
+                </div>
+                <p style={{ color: "#8B8B9E" }}>
+                  Hit Refresh in that section first - it reads your history from the blockchain and can take a
+                  moment. If it still shows nothing after a purchase you know went through, hard-refresh the page
+                  (Ctrl+Shift+R) and try again.
+                </p>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Verification / trust footer */}
