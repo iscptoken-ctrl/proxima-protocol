@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState } from "react";
 import { useAccount, usePublicClient, useReadContract, useWriteContract } from "wagmi";
 import { readContract, waitForTransactionReceipt } from "@wagmi/core";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { decodeEventLog, keccak256, toHex } from "viem";
 import { wagmiConfig } from "@/lib/wagmi";
 import {
   PROXIMA_PROTOCOL_ADDRESS,
@@ -14,7 +13,6 @@ import {
   FOUNDER_SLOTS,
   FOUNDER_INITIAL_PRICE,
   FOUNDER_FORCE_BUY_INCREMENT,
-  ETHERSCAN_API_KEY,
   erc20Abi,
   proximaProtocolAbi,
 } from "@/lib/contract";
@@ -162,11 +160,13 @@ export default function ProximaProtocolApp() {
   // My tickets (per-user history, with correct win/lose detection)
   // ---------------------------------------------------------------------
   //
-  // Free-tier RPC eth_getLogs is capped to tiny block ranges (e.g. 10
-  // blocks on Alchemy's free plan) - fine near deployment, but useless
-  // once thousands of blocks have passed. Etherscan's V2 API (covers BSC
-  // via chainid=56) has no such range cap, so ticket history is fetched
-  // from there instead of via the RPC directly.
+  // Free-tier RPC eth_getLogs is capped to tiny block ranges on some
+  // providers (e.g. 10 blocks on Alchemy's free plan) and BscScan's old
+  // free log-search API was shut down in Dec 2025. NodeReal's MegaNode
+  // (the BNB Chain team's own recommended replacement) is used here via
+  // plain eth_getLogs, with an adaptive chunk size: start optimistic,
+  // shrink only on range-shaped errors, back off with a real delay on
+  // rate-limit errors, and never retry the same failure forever.
   function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
     return Promise.race([
       promise,
@@ -174,61 +174,75 @@ export default function ProximaProtocolApp() {
     ]);
   }
 
-  const EVENT_SIGNATURES: Record<"TicketBought" | "RandomTicketsBought", string> = {
-    TicketBought: "TicketBought(uint256,address,uint256)",
-    RandomTicketsBought: "RandomTicketsBought(uint256,address,uint256[])",
-  };
+  function delay(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
 
-  const fetchEventsFromEtherscan = useCallback(
+  function isRateLimitError(e: any): boolean {
+    const msg = String(e?.message || e?.details || e || "").toLowerCase();
+    return msg.includes("429") || msg.includes("rate limit") || msg.includes("too many requests");
+  }
+
+  const fetchEventsChunked = useCallback(
     async (eventName: "TicketBought" | "RandomTicketsBought", player: `0x${string}`) => {
-      const topic0 = keccak256(toHex(EVENT_SIGNATURES[eventName]));
-      const url =
-        `https://api.etherscan.io/v2/api?chainid=56&module=logs&action=getLogs` +
-        `&address=${PROXIMA_PROTOCOL_ADDRESS}` +
-        `&fromBlock=${DEPLOY_BLOCK.toString()}` +
-        `&toBlock=latest` +
-        `&topic0=${topic0}` +
-        `&apikey=${ETHERSCAN_API_KEY}`;
-
-      const res = await withTimeout(fetch(url), 20000, "Etherscan getLogs");
-      const json = await res.json();
-
-      if (json.status === "0") {
-        if (String(json.result).toLowerCase().includes("no records") || json.message === "No records found") {
-          return [];
-        }
-        throw new Error(`Etherscan getLogs error: ${json.result || json.message}`);
-      }
-
+      if (!publicClient) return [];
+      const latest = await withTimeout(publicClient.getBlockNumber(), 15000, "getBlockNumber");
+      let chunkSize = 5000n;
+      const MIN_CHUNK = 5n;
+      let from = DEPLOY_BLOCK;
+      const allLogs: any[] = [];
+      let attempts = 0;
+      let rateLimitBackoffMs = 1000;
       const playerLower = player.toLowerCase();
-      const decoded = (json.result as any[])
-        .map((log) => {
-          try {
-            const { args } = decodeEventLog({
-              abi: proximaProtocolAbi,
-              data: log.data,
-              topics: log.topics,
-              eventName,
-            });
-            return { args };
-          } catch {
-            return null;
-          }
-        })
-        .filter((l): l is { args: any } => l !== null)
-        .filter((l) => (l.args.player as string | undefined)?.toLowerCase() === playerLower);
 
-      return decoded;
+      while (from <= latest) {
+        attempts++;
+        if (attempts > 3000) {
+          throw new Error("Gave up after 3000 attempts - RPC seems to be rejecting every request.");
+        }
+        const to = from + chunkSize > latest ? latest : from + chunkSize;
+        try {
+          const logs = await withTimeout(
+            publicClient.getContractEvents({
+              address: PROXIMA_PROTOCOL_ADDRESS,
+              abi: proximaProtocolAbi,
+              eventName,
+              fromBlock: from,
+              toBlock: to,
+            }),
+            15000,
+            "getContractEvents"
+          );
+          const mine = logs.filter((log: any) => (log.args?.player as string | undefined)?.toLowerCase() === playerLower);
+          allLogs.push(...mine);
+          from = to + 1n;
+          rateLimitBackoffMs = 1000; // reset backoff after a success
+        } catch (e) {
+          if (isRateLimitError(e)) {
+            await delay(rateLimitBackoffMs);
+            rateLimitBackoffMs = Math.min(rateLimitBackoffMs * 2, 10000);
+            continue; // retry the same range after waiting
+          }
+          if (chunkSize > MIN_CHUNK) {
+            chunkSize = chunkSize / 2n > MIN_CHUNK ? chunkSize / 2n : MIN_CHUNK;
+            continue; // retry the same starting point with a smaller range
+          }
+          // already at the minimum chunk size and still failing - skip
+          // this slice so one bad range can't hang the whole load
+          from = to + 1n;
+        }
+      }
+      return allLogs;
     },
-    []
+    [publicClient]
   );
 
   const loadMyTickets = useCallback(async () => {
     if (!address || !publicClient) return;
     setLoadingHistory(true);
     try {
-      const manualLogs = await fetchEventsFromEtherscan("TicketBought", address);
-      const randomLogs = await fetchEventsFromEtherscan("RandomTicketsBought", address);
+      const manualLogs = await fetchEventsChunked("TicketBought", address);
+      const randomLogs = await fetchEventsChunked("RandomTicketsBought", address);
 
       const byRound = new Map<string, Set<bigint>>();
       for (const log of manualLogs) {
@@ -297,7 +311,7 @@ export default function ProximaProtocolApp() {
     } finally {
       setLoadingHistory(false);
     }
-  }, [address, publicClient, fetchEventsFromEtherscan]);
+  }, [address, publicClient, fetchEventsChunked]);
 
   useEffect(() => {
     loadMyTickets();
