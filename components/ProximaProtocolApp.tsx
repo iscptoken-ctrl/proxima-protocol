@@ -186,20 +186,27 @@ export default function ProximaProtocolApp() {
     async (eventName: "TicketBought" | "RandomTicketsBought", player: `0x${string}`) => {
       if (!publicClient) return [];
       const latest = await withTimeout(publicClient.getBlockNumber(), 15000, "getBlockNumber");
-      let chunkSize = 2000n;
+      // Alchemy's free tier caps eth_getLogs at a 10-block range per
+      // request (confirmed via their own error message). Use that
+      // directly instead of guessing a larger size and shrinking down.
+      const CHUNK_SIZE = 9n;
       let from = DEPLOY_BLOCK;
       const allLogs: any[] = [];
       let attempts = 0;
       let rateLimitBackoffMs = 1000;
-      const MAX_ATTEMPTS = 60;
+      // With a 10-block cap, covering any real block range takes many
+      // requests - size the attempt budget to the actual range instead
+      // of a small fixed number, with room for rate-limit retries too.
+      const totalChunksNeeded = latest > from ? Number((latest - from) / CHUNK_SIZE) + 1 : 1;
+      const MAX_ATTEMPTS = Math.min(totalChunksNeeded * 5 + 100, 20000);
       const playerLower = player.toLowerCase();
 
       while (from <= latest) {
         attempts++;
         if (attempts > MAX_ATTEMPTS) {
-          throw new Error("Gave up after 60 attempts - RPC seems to be rejecting every request.");
+          throw new Error(`Gave up after ${MAX_ATTEMPTS} attempts - RPC seems to be rejecting every request.`);
         }
-        const to = from + chunkSize > latest ? latest : from + chunkSize;
+        const to = from + CHUNK_SIZE > latest ? latest : from + CHUNK_SIZE;
         try {
           // Fetch all of this event type in the range (no indexed-arg
           // filter - some RPC providers reject/mishandle filtered
@@ -220,22 +227,17 @@ export default function ProximaProtocolApp() {
           allLogs.push(...mine);
           from = to + 1n;
           rateLimitBackoffMs = 1000; // reset backoff after a success
-          await delay(150); // small courtesy gap between requests to avoid re-triggering the limit
+          await delay(120); // small courtesy gap between requests to avoid re-triggering the limit
         } catch (e) {
           if (isRateLimitError(e)) {
             await delay(rateLimitBackoffMs);
             rateLimitBackoffMs = Math.min(rateLimitBackoffMs * 2, 10000); // exponential backoff, capped at 10s
-            // don't shrink the range or advance `from` - just retry the same chunk after waiting
+            // don't advance `from` - just retry the same chunk after waiting
             continue;
           }
-          // some other error (bad range, timeout, etc.) - halve the
-          // range and retry, unless we're already down to a sliver
-          // (then skip ahead so one bad block range can't hang the load)
-          if (chunkSize > 50n) {
-            chunkSize = chunkSize / 2n;
-          } else {
-            from = to + 1n;
-          }
+          // some other error (timeout, transient failure) - skip this
+          // chunk so one bad block range can't hang the whole load
+          from = to + 1n;
         }
       }
       return allLogs;
