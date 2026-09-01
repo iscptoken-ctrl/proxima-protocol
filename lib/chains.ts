@@ -5,12 +5,12 @@ export const bnbChain = defineChain({
   name: "BNB Smart Chain",
   nativeCurrency: { decimals: 18, name: "BNB", symbol: "BNB" },
   rpcUrls: {
-    // The official public BSC endpoints (bsc-dataseed.* and similar
-    // "free, no signup" RPCs) either disable eth_getLogs entirely or
-    // hang/reject on it - that's why event history (ticket lookups)
-    // kept failing no matter how the request was chunked. Alchemy's
-    // free tier reliably supports eth_getLogs for BNB Smart Chain.
-    default: { http: ["https://bnb-mainnet.g.alchemy.com/v2/alch_ejOrXkdaP3iabIlFYspVT"] },
+    // NodeReal's MegaNode - the BNB Chain team's own recommended free
+    // replacement for the now-shut-down BscScan API / most free-tier
+    // RPCs' crippling eth_getLogs range caps (e.g. Alchemy free tier
+    // caps at 10 blocks per call, unusable once any real time has
+    // passed since deployment).
+    default: { http: ["https://bsc-mainnet.nodereal.io/v1/e2f904bfa775463e9d05364f610074f8"] },
   },
   blockExplorers: {
     default: { name: "BscScan", url: "https://bscscan.com" },
