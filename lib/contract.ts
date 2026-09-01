@@ -1,6 +1,15 @@
-﻿export const PROXIMA_PROTOCOL_ADDRESS = "0xef798BDC88b3D34309b178959869bB5f01c0231b" as const;
+export const PROXIMA_PROTOCOL_ADDRESS = "0xef798BDC88b3D34309b178959869bB5f01c0231b" as const;
 export const USDT_ADDRESS = "0x55d398326f99059fF775485246999027B3197955" as const;
 export const MAKER_WALLET = "0xD27c9C4C5539136C652063bF69945f61eCdE17f7" as const;
+
+// Used only to read past event logs (ticket history) via the Etherscan
+// V2 unified API (covers BSC via chainid=56) instead of raw eth_getLogs -
+// free RPC tiers cap eth_getLogs to tiny block ranges (e.g. 10 blocks on
+// Alchemy's free plan), which makes scanning from deployment impossible
+// once more than a few thousand blocks have passed. Etherscan's API has
+// no such range limit. This is a low-privilege, rate-limited free key -
+// fine to ship client-side.
+export const ETHERSCAN_API_KEY = "YMK7JC4FNPZHMGCEJUMWZA1NKRUJWTCMCD" as const;
 
 export const TICKET_PRICE = 1n * 10n ** 18n; // 1 USDT
 export const NUMBER_MIN = 1;
@@ -10,7 +19,7 @@ export const FOUNDER_INITIAL_PRICE = 20n * 10n ** 18n; // $20
 export const FOUNDER_FORCE_BUY_INCREMENT = 10n * 10n ** 18n; // $10
 
 export const erc20Abi = [
-  {
+  {a
     type: "function",
     name: "approve",
     stateMutability: "nonpayable",
